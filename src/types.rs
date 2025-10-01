@@ -281,11 +281,21 @@ pub struct ExactSolanaPayload {
     pub transaction: String,
 }
 
+/// Vara Network fungible token transfer payload and optional metadata used for exact payments.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExactVaraPayload {
+    pub payload: VaraPaymentPayload,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<VaraPayloadMetadata>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ExactPaymentPayload {
     Evm(ExactEvmPayload),
     Solana(ExactSolanaPayload),
+    Vara(ExactVaraPayload),
 }
 
 /// Describes a signed request to transfer a specific amount of funds on-chain.
@@ -635,6 +645,214 @@ impl From<u64> for TokenAmount {
     }
 }
 
+/// Error returned when parsing a Vara SS58-encoded address fails.
+#[derive(Debug, thiserror::Error)]
+#[error("Invalid Vara address: {0}")]
+pub struct VaraAddressError(pub String);
+
+fn decode_ss58_bytes(value: &str) -> Result<[u8; 32], VaraAddressError> {
+    let decoded = bs58::decode(value)
+        .into_vec()
+        .map_err(|_| VaraAddressError(value.to_string()))?;
+
+    if decoded.len() < 35 {
+        return Err(VaraAddressError(value.to_string()));
+    }
+
+    let start = decoded.len() - 32;
+    let bytes: [u8; 32] = decoded[start..]
+        .try_into()
+        .map_err(|_| VaraAddressError(value.to_string()))?;
+    Ok(bytes)
+}
+
+/// SS58-encoded address on Vara Network.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct VaraAddress {
+    account_id: [u8; 32],
+    ss58: String,
+}
+
+impl VaraAddress {
+    /// Parse a SS58-encoded address into a [`VaraAddress`].
+    pub fn from_ss58(address: &str) -> Result<Self, VaraAddressError> {
+        let account_id = decode_ss58_bytes(address)?;
+        Ok(Self {
+            account_id,
+            ss58: address.to_string(),
+        })
+    }
+
+    /// Return the SS58 representation of the address.
+    pub fn to_ss58(&self) -> String {
+        self.ss58.clone()
+    }
+
+    /// Return the raw 32-byte account identifier.
+    pub fn account_id(&self) -> [u8; 32] {
+        self.account_id
+    }
+}
+
+impl std::fmt::Display for VaraAddress {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.ss58)
+    }
+}
+
+impl std::str::FromStr for VaraAddress {
+    type Err = VaraAddressError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        VaraAddress::from_ss58(s)
+    }
+}
+
+impl Serialize for VaraAddress {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.ss58)
+    }
+}
+
+impl<'de> Deserialize<'de> for VaraAddress {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        VaraAddress::from_ss58(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Vara program identifier wrapper.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct VaraProgramId {
+    bytes: [u8; 32],
+    ss58: String,
+}
+
+impl VaraProgramId {
+    pub fn from_ss58(program_id: &str) -> Result<Self, VaraAddressError> {
+        let bytes = decode_ss58_bytes(program_id)?;
+        Ok(Self {
+            bytes,
+            ss58: program_id.to_string(),
+        })
+    }
+
+    #[allow(dead_code)]
+    pub fn to_ss58(&self) -> String {
+        self.ss58.clone()
+    }
+
+    #[allow(dead_code)]
+    pub fn as_bytes(&self) -> [u8; 32] {
+        self.bytes
+    }
+}
+
+impl Serialize for VaraProgramId {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.ss58)
+    }
+}
+
+impl<'de> Deserialize<'de> for VaraProgramId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        VaraProgramId::from_ss58(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Vara SCALE-compatible nonce, stored as 32 raw bytes encoded with base64 for transport.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct VaraNonce(pub [u8; 32]);
+
+impl Serialize for VaraNonce {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let encoded = b64.encode(self.0);
+        serializer.serialize_str(&encoded)
+    }
+}
+
+impl<'de> Deserialize<'de> for VaraNonce {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        let decoded = b64
+            .decode(s.as_bytes())
+            .map_err(|_| serde::de::Error::custom("invalid Vara nonce"))?;
+        let array: [u8; 32] = decoded
+            .try_into()
+            .map_err(|_| serde::de::Error::custom("Vara nonce must be 32 bytes"))?;
+        Ok(VaraNonce(array))
+    }
+}
+
+/// Vara signature bytes encoded as base64.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct VaraSignature(pub Vec<u8>);
+
+impl Serialize for VaraSignature {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let encoded = b64.encode(&self.0);
+        serializer.serialize_str(&encoded)
+    }
+}
+
+impl<'de> Deserialize<'de> for VaraSignature {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        let decoded = b64
+            .decode(s.as_bytes())
+            .map_err(|_| serde::de::Error::custom("invalid Vara signature"))?;
+        Ok(VaraSignature(decoded))
+    }
+}
+
+/// Vara Network fungible token payment payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaraPaymentPayload {
+    pub contract_id: VaraProgramId,
+    pub from: VaraAddress,
+    pub to: VaraAddress,
+    pub amount: TokenAmount,
+    pub valid_after: UnixTimestamp,
+    pub valid_before: UnixTimestamp,
+    pub nonce: VaraNonce,
+    pub signature: VaraSignature,
+}
+
+/// Optional metadata that augments a Vara payment payload with execution hints.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaraPayloadMetadata {
+    pub gas_limit: u64,
+    pub value: TokenAmount,
+    pub tip: TokenAmount,
+}
+
 /// Represents either an EVM address (0x...), or an off-chain address, or Solana address.
 /// The format is used for routing settlement.
 #[derive(Debug, Hash, Clone, PartialEq, Eq)]
@@ -644,6 +862,7 @@ pub enum MixedAddress {
     /// Off-chain address in `^[A-Za-z0-9][A-Za-z0-9-]{0,34}[A-Za-z0-9]$` format.
     Offchain(String),
     Solana(Pubkey),
+    Vara(VaraAddress),
 }
 
 #[macro_export]
@@ -668,6 +887,12 @@ impl From<Pubkey> for MixedAddress {
     }
 }
 
+impl From<VaraAddress> for MixedAddress {
+    fn from(value: VaraAddress) -> Self {
+        MixedAddress::Vara(value)
+    }
+}
+
 impl From<alloy::primitives::Address> for MixedAddress {
     fn from(value: alloy::primitives::Address) -> Self {
         MixedAddress::Evm(value.into())
@@ -682,6 +907,7 @@ impl TryFrom<MixedAddress> for alloy::primitives::Address {
             MixedAddress::Evm(address) => Ok(address.into()),
             MixedAddress::Offchain(_) => Err(MixedAddressError::NotEvmAddress),
             MixedAddress::Solana(_) => Err(MixedAddressError::NotEvmAddress),
+            MixedAddress::Vara(_) => Err(MixedAddressError::NotEvmAddress),
         }
     }
 }
@@ -698,6 +924,8 @@ pub enum MixedAddressError {
     NotEvmAddress,
     #[error("Invalid address format")]
     InvalidAddressFormat,
+    #[error("Not a Vara address")]
+    NotVaraAddress,
 }
 
 impl TryInto<EvmAddress> for MixedAddress {
@@ -708,6 +936,20 @@ impl TryInto<EvmAddress> for MixedAddress {
             MixedAddress::Evm(address) => Ok(address),
             MixedAddress::Offchain(_) => Err(MixedAddressError::NotEvmAddress),
             MixedAddress::Solana(_) => Err(MixedAddressError::NotEvmAddress),
+            MixedAddress::Vara(_) => Err(MixedAddressError::NotEvmAddress),
+        }
+    }
+}
+
+impl TryFrom<MixedAddress> for VaraAddress {
+    type Error = MixedAddressError;
+
+    fn try_from(value: MixedAddress) -> Result<Self, Self::Error> {
+        match value {
+            MixedAddress::Vara(address) => Ok(address),
+            MixedAddress::Evm(_) => Err(MixedAddressError::NotVaraAddress),
+            MixedAddress::Offchain(_) => Err(MixedAddressError::NotVaraAddress),
+            MixedAddress::Solana(_) => Err(MixedAddressError::NotVaraAddress),
         }
     }
 }
@@ -718,6 +960,7 @@ impl Display for MixedAddress {
             MixedAddress::Evm(address) => write!(f, "{address}"),
             MixedAddress::Offchain(address) => write!(f, "{address}"),
             MixedAddress::Solana(pubkey) => write!(f, "{pubkey}"),
+            MixedAddress::Vara(address) => write!(f, "{address}"),
         }
     }
 }
@@ -741,6 +984,10 @@ impl<'de> Deserialize<'de> for MixedAddress {
         if let Ok(pk) = Pubkey::from_str(&s) {
             return Ok(MixedAddress::Solana(pk));
         }
+        // 3) Vara SS58 address
+        if let Ok(address) = VaraAddress::from_ss58(&s) {
+            return Ok(MixedAddress::Vara(address));
+        }
         // 3) Off-chain address by regex
         if OFFCHAIN_ADDRESS_REGEX.is_match(&s) {
             return Ok(MixedAddress::Offchain(s));
@@ -758,6 +1005,7 @@ impl Serialize for MixedAddress {
             MixedAddress::Evm(addr) => serializer.serialize_str(&addr.to_string()),
             MixedAddress::Offchain(s) => serializer.serialize_str(s),
             MixedAddress::Solana(pubkey) => serializer.serialize_str(pubkey.to_string().as_str()),
+            MixedAddress::Vara(address) => serializer.serialize_str(&address.to_ss58()),
         }
     }
 }
@@ -767,6 +1015,7 @@ pub enum TransactionHash {
     /// A 32-byte EVM transaction hash, encoded as 0x-prefixed hex string.
     Evm([u8; 32]),
     Solana([u8; 64]),
+    Vara([u8; 32]),
 }
 
 impl<'de> Deserialize<'de> for TransactionHash {
@@ -794,6 +1043,13 @@ impl<'de> Deserialize<'de> for TransactionHash {
             return Ok(TransactionHash::Solana(array));
         }
 
+        if let Ok(bytes) = bs58::decode(&s).into_vec()
+            && bytes.len() == 32
+        {
+            let array: [u8; 32] = bytes.try_into().unwrap();
+            return Ok(TransactionHash::Vara(array));
+        }
+
         Err(serde::de::Error::custom("Invalid transaction hash format"))
     }
 }
@@ -809,6 +1065,10 @@ impl Serialize for TransactionHash {
                 let b58_string = bs58::encode(bytes).into_string();
                 serializer.serialize_str(&b58_string)
             }
+            TransactionHash::Vara(bytes) => {
+                let b58_string = bs58::encode(bytes).into_string();
+                serializer.serialize_str(&b58_string)
+            }
         }
     }
 }
@@ -820,6 +1080,9 @@ impl Display for TransactionHash {
                 write!(f, "0x{}", hex::encode(bytes))
             }
             TransactionHash::Solana(bytes) => {
+                write!(f, "{}", bs58::encode(bytes).into_string())
+            }
+            TransactionHash::Vara(bytes) => {
                 write!(f, "{}", bs58::encode(bytes).into_string())
             }
         }

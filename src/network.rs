@@ -51,6 +51,12 @@ pub enum Network {
     /// Sei testnet (chain ID 1328).
     #[serde(rename = "sei-testnet")]
     SeiTestnet,
+    /// Vara Network mainnet.
+    #[serde(rename = "vara")]
+    Vara,
+    /// Vara Network public testnet.
+    #[serde(rename = "vara-testnet")]
+    VaraTestnet,
 }
 
 impl Display for Network {
@@ -67,6 +73,8 @@ impl Display for Network {
             Network::Polygon => write!(f, "polygon"),
             Network::Sei => write!(f, "sei"),
             Network::SeiTestnet => write!(f, "sei-testnet"),
+            Network::Vara => write!(f, "vara"),
+            Network::VaraTestnet => write!(f, "vara-testnet"),
         }
     }
 }
@@ -75,6 +83,7 @@ impl Display for Network {
 pub enum NetworkFamily {
     Evm,
     Solana,
+    Vara,
 }
 
 impl From<Network> for NetworkFamily {
@@ -91,6 +100,8 @@ impl From<Network> for NetworkFamily {
             Network::Polygon => NetworkFamily::Evm,
             Network::Sei => NetworkFamily::Evm,
             Network::SeiTestnet => NetworkFamily::Evm,
+            Network::Vara => NetworkFamily::Vara,
+            Network::VaraTestnet => NetworkFamily::Vara,
         }
     }
 }
@@ -110,7 +121,26 @@ impl Network {
             Network::Polygon,
             Network::Sei,
             Network::SeiTestnet,
+            Network::Vara,
+            Network::VaraTestnet,
         ]
+    }
+
+    /// Return the canonical RPC endpoint for Vara networks.
+    pub fn vara_rpc_url(&self) -> &'static str {
+        match self {
+            Network::Vara => "wss://rpc.vara-network.io",
+            Network::VaraTestnet => "wss://testnet.vara-network.io",
+            _ => panic!("Not a Vara network"),
+        }
+    }
+
+    /// Return the SS58 prefix for Vara addresses.
+    pub fn vara_ss58_prefix(&self) -> u16 {
+        match self {
+            Network::Vara | Network::VaraTestnet => 137,
+            _ => panic!("Not a Vara network"),
+        }
     }
 }
 
@@ -322,6 +352,9 @@ impl USDCDeployment {
             Network::Polygon => &USDC_POLYGON,
             Network::Sei => &USDC_SEI,
             Network::SeiTestnet => &USDC_SEI_TESTNET,
+            Network::Vara | Network::VaraTestnet => {
+                panic!("USDC deployment is not defined for Vara networks")
+            }
         }
     }
 }

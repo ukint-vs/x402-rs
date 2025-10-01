@@ -5,6 +5,7 @@ use crate::X402PaymentsError;
 
 pub mod evm;
 pub mod solana;
+pub mod vara;
 
 #[async_trait::async_trait]
 pub trait SenderWallet: Send + Sync {

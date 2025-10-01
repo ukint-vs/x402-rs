@@ -2,6 +2,7 @@ use std::time::SystemTimeError;
 
 use crate::chain::evm::EvmProvider;
 use crate::chain::solana::SolanaProvider;
+use crate::chain::vara::VaraProvider;
 use crate::facilitator::Facilitator;
 use crate::network::Network;
 use crate::types::{
@@ -11,11 +12,13 @@ use crate::types::{
 
 pub mod evm;
 pub mod solana;
+pub mod vara;
 
 #[derive(Clone)]
 pub enum NetworkProvider {
     Evm(EvmProvider),
     Solana(SolanaProvider),
+    Vara(VaraProvider),
 }
 
 pub trait NetworkProviderOps {
@@ -28,6 +31,7 @@ impl NetworkProviderOps for NetworkProvider {
         match self {
             NetworkProvider::Evm(provider) => provider.signer_address(),
             NetworkProvider::Solana(provider) => provider.signer_address(),
+            NetworkProvider::Vara(provider) => provider.signer_address(),
         }
     }
 
@@ -35,6 +39,7 @@ impl NetworkProviderOps for NetworkProvider {
         match self {
             NetworkProvider::Evm(provider) => provider.network(),
             NetworkProvider::Solana(provider) => provider.network(),
+            NetworkProvider::Vara(provider) => provider.network(),
         }
     }
 }
@@ -46,6 +51,7 @@ impl Facilitator for NetworkProvider {
         match self {
             NetworkProvider::Evm(provider) => provider.verify(request).await,
             NetworkProvider::Solana(provider) => provider.verify(request).await,
+            NetworkProvider::Vara(provider) => provider.verify(request).await,
         }
     }
 
@@ -53,6 +59,7 @@ impl Facilitator for NetworkProvider {
         match self {
             NetworkProvider::Evm(provider) => provider.settle(request).await,
             NetworkProvider::Solana(provider) => provider.settle(request).await,
+            NetworkProvider::Vara(provider) => provider.settle(request).await,
         }
     }
 
@@ -60,6 +67,7 @@ impl Facilitator for NetworkProvider {
         match self {
             NetworkProvider::Evm(provider) => provider.supported().await,
             NetworkProvider::Solana(provider) => provider.supported().await,
+            NetworkProvider::Vara(provider) => provider.supported().await,
         }
     }
 }

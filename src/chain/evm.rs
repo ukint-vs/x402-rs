@@ -122,6 +122,8 @@ impl TryFrom<Network> for EvmChain {
             Network::Polygon => Ok(EvmChain::new(value, 137)),
             Network::Sei => Ok(EvmChain::new(value, 1329)),
             Network::SeiTestnet => Ok(EvmChain::new(value, 1328)),
+            Network::Vara => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            Network::VaraTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
         }
     }
 }
@@ -198,6 +200,9 @@ impl EvmProvider {
         let payment_payload = match &payload.payload {
             ExactPaymentPayload::Evm(payload) => payload,
             ExactPaymentPayload::Solana(_) => {
+                return Err(FacilitatorLocalError::UnsupportedNetwork(None));
+            }
+            ExactPaymentPayload::Vara(_) => {
                 return Err(FacilitatorLocalError::UnsupportedNetwork(None));
             }
         };

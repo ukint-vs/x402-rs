@@ -59,6 +59,14 @@ impl FacilitatorLocal {
                         fee_payer: provider.signer_address(),
                     }),
                 },
+                NetworkProvider::Vara(provider) => SupportedPaymentKind {
+                    x402_version: X402Version::V1,
+                    scheme: Scheme::Exact,
+                    network: *network,
+                    extra: Some(SupportedPaymentKindExtra {
+                        fee_payer: provider.signer_address(),
+                    }),
+                },
             })
             .collect()
     }
@@ -72,6 +80,10 @@ impl FacilitatorLocal {
                     address: provider.signer_address(),
                 },
                 NetworkProvider::Solana(provider) => HealthStatus {
+                    network: *network,
+                    address: provider.signer_address(),
+                },
+                NetworkProvider::Vara(provider) => HealthStatus {
                     network: *network,
                     address: provider.signer_address(),
                 },

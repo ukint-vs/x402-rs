@@ -29,8 +29,10 @@ use std::env;
 
 use crate::chain::evm::EvmProvider;
 use crate::chain::solana::SolanaProvider;
+use crate::chain::vara::{VaraConfig, VaraProvider};
 use crate::chain::{NetworkProvider, NetworkProviderOps};
 use crate::network::{Network, NetworkFamily};
+use crate::types::VaraAddress;
 
 const ENV_SIGNER_TYPE: &str = "SIGNER_TYPE";
 const ENV_EVM_PRIVATE_KEY: &str = "EVM_PRIVATE_KEY";
@@ -46,6 +48,10 @@ const ENV_RPC_POLYGON_AMOY: &str = "RPC_URL_POLYGON_AMOY";
 const ENV_RPC_POLYGON: &str = "RPC_URL_POLYGON";
 const ENV_RPC_SEI: &str = "RPC_URL_SEI";
 const ENV_RPC_SEI_TESTNET: &str = "RPC_URL_SEI_TESTNET";
+const ENV_RPC_VARA: &str = "RPC_URL_VARA";
+const ENV_RPC_VARA_TESTNET: &str = "RPC_URL_VARA_TESTNET";
+const ENV_VARA_SIGNER_ADDRESS: &str = "VARA_SIGNER_ADDRESS";
+const ENV_VARA_SIGNER_SURI: &str = "VARA_SIGNER_SURI";
 
 /// A cache of pre-initialized [`EthereumProvider`] instances keyed by network.
 ///
@@ -102,6 +108,8 @@ impl ProviderCache {
                 Network::Polygon => ENV_RPC_POLYGON,
                 Network::Sei => ENV_RPC_SEI,
                 Network::SeiTestnet => ENV_RPC_SEI_TESTNET,
+                Network::Vara => ENV_RPC_VARA,
+                Network::VaraTestnet => ENV_RPC_VARA_TESTNET,
             };
             let is_eip1559 = match network {
                 Network::BaseSepolia => true,
@@ -115,6 +123,8 @@ impl ProviderCache {
                 Network::Polygon => true,
                 Network::Sei => true,
                 Network::SeiTestnet => true,
+                Network::Vara => false,
+                Network::VaraTestnet => false,
             };
 
             let rpc_url = env::var(env_var);
@@ -144,6 +154,27 @@ impl ProviderCache {
                         let keypair = SignerType::from_env()?.make_solana_wallet()?;
                         let provider = SolanaProvider::try_new(keypair, rpc_url.clone(), *network)?;
                         let provider = NetworkProvider::Solana(provider);
+                        let signer_address = provider.signer_address();
+                        providers.insert(*network, provider);
+                        tracing::info!(
+                            "Initialized provider for {} at {} using {}",
+                            network,
+                            rpc_url,
+                            signer_address
+                        );
+                    }
+                    NetworkFamily::Vara => {
+                        let signer_address = env::var(ENV_VARA_SIGNER_ADDRESS)
+                            .map_err(|_| format!("env {ENV_VARA_SIGNER_ADDRESS} not set"))?;
+                        let signer_address = VaraAddress::from_ss58(&signer_address)
+                            .map_err(|e| format!("invalid Vara signer address: {e}"))?;
+                        let signer_suri = env::var(ENV_VARA_SIGNER_SURI).ok();
+                        let config =
+                            VaraConfig::new(*network, rpc_url.clone(), signer_address, signer_suri);
+                        let provider = VaraProvider::try_new(config).await.map_err(|e| {
+                            format!("failed to initialize Vara provider for {network}: {e}")
+                        })?;
+                        let provider = NetworkProvider::Vara(provider);
                         let signer_address = provider.signer_address();
                         providers.insert(*network, provider);
                         tracing::info!(

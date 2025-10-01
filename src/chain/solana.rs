@@ -42,6 +42,8 @@ impl TryFrom<Network> for SolanaChain {
             Network::Polygon => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::Sei => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
             Network::SeiTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            Network::Vara => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
+            Network::VaraTestnet => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
         }
     }
 }
@@ -75,6 +77,9 @@ impl TryFrom<MixedAddress> for SolanaAddress {
                 "expected Solana address".to_string(),
             )),
             MixedAddress::Solana(pubkey) => Ok(Self { pubkey }),
+            MixedAddress::Vara(_) => Err(FacilitatorLocalError::InvalidAddress(
+                "expected Solana address".to_string(),
+            )),
         }
     }
 }
@@ -355,6 +360,9 @@ impl SolanaProvider {
                 return Err(FacilitatorLocalError::UnsupportedNetwork(None));
             }
             ExactPaymentPayload::Solana(payload) => payload,
+            ExactPaymentPayload::Vara(_) => {
+                return Err(FacilitatorLocalError::UnsupportedNetwork(None));
+            }
         };
         if payload.network != self.network() {
             return Err(FacilitatorLocalError::NetworkMismatch(
