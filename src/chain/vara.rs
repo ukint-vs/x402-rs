@@ -1,15 +1,26 @@
+use std::str::FromStr;
 use std::time::Duration;
 
 use crate::chain::{FacilitatorLocalError, NetworkProviderOps};
 use crate::facilitator::Facilitator;
 use crate::network::Network;
 use crate::timestamp::UnixTimestamp;
+use crate::types::PaymentPayload;
+use crate::types::TransactionHash;
+use crate::types::VaraSignature;
 use crate::types::{
     ExactPaymentPayload, FacilitatorErrorReason, MixedAddress, PaymentRequirements, Scheme,
     SettleRequest, SettleResponse, SupportedPaymentKind, SupportedPaymentKindExtra,
-    SupportedPaymentKindsResponse, TokenAmount, VaraAddress, VaraPaymentPayload, VerifyRequest,
-    VerifyResponse, X402Version,
+    SupportedPaymentKindsResponse, TokenAmount, VaraAddress, VerifyRequest, VerifyResponse,
+    X402Version,
 };
+use extended_vft_client::vft::io::TransferFrom;
+use gprimitives::{ActorId, MessageId, U256};
+use gsdk::ext::sp_core::ByteArray;
+use gsdk::ext::sp_runtime::AccountId32;
+use gsdk::TxInBlock;
+use gsdk::{Api, PairSigner, ext::sp_core::crypto::Ss58Codec, signer::Signer};
+// use gclient::GearApi;
 
 /// Vara network metadata describing RPC and timing parameters.
 #[derive(Clone, Debug)]
@@ -65,119 +76,43 @@ impl VaraConfig {
     }
 }
 
-/// Lightweight Vara Network provider stub.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct VaraProvider {
     chain: VaraChain,
-    config: VaraConfig,
+    rpc_client: Api,
+    signer: Signer,
+    signer_address: ActorId,
 }
 
 impl VaraProvider {
+    /// Create a new VaraProvider.
     pub async fn try_new(config: VaraConfig) -> Result<Self, FacilitatorLocalError> {
         let chain = VaraChain::new(config.network, config.rpc_url.clone());
-        Ok(Self { chain, config })
-    }
 
-    fn ensure_scheme(&self, request: &VerifyRequest) -> Result<(), FacilitatorLocalError> {
-        if request.payment_payload.scheme != Scheme::Exact
-            || request.payment_requirements.scheme != Scheme::Exact
-        {
-            return Err(FacilitatorLocalError::SchemeMismatch(
-                None,
-                Scheme::Exact,
-                request.payment_payload.scheme,
-            ));
-        }
-        Ok(())
-    }
+        // let api = Api::new(config.rpc_url.clone()).await
+        //     .map_err(|e| FacilitatorLocalError::InvalidSigner(format!("Failed to create API: {e}")))?;
 
-    fn ensure_network(
-        &self,
-        request: &VerifyRequest,
-        payer: Option<MixedAddress>,
-    ) -> Result<(), FacilitatorLocalError> {
-        if request.payment_payload.network != self.network() {
-            return Err(FacilitatorLocalError::NetworkMismatch(
-                payer.clone(),
-                self.network(),
-                request.payment_payload.network,
-            ));
-        }
-        if request.payment_requirements.network != self.network() {
-            return Err(FacilitatorLocalError::NetworkMismatch(
-                payer,
-                self.network(),
-                request.payment_requirements.network,
-            ));
-        }
-        Ok(())
-    }
-
-    fn ensure_receiver(
-        &self,
-        payload: &VaraPaymentPayload,
-        requirements: &PaymentRequirements,
-        payer: &MixedAddress,
-    ) -> Result<(), FacilitatorLocalError> {
-        let expected_receiver: VaraAddress =
-            requirements.pay_to.clone().try_into().map_err(|_| {
-                FacilitatorLocalError::InvalidAddress(
-                    "expected Vara address for payment requirements".to_string(),
-                )
+        let (gear_api, signer) = if let Some(suri) = config.signer_suri {
+            let gear_api = Api::new(config.rpc_url.as_str()).await.map_err(|e| {
+                FacilitatorLocalError::InvalidSigner(format!("Failed to create API: {e}"))
             })?;
-        if expected_receiver.to_ss58() != payload.to.to_ss58() {
-            return Err(FacilitatorLocalError::ReceiverMismatch(
-                payer.clone(),
-                payload.to.to_ss58(),
-                requirements.pay_to.to_string(),
-            ));
-        }
-        Ok(())
-    }
 
-    fn ensure_amount(
-        &self,
-        payload: &VaraPaymentPayload,
-        requirements: &PaymentRequirements,
-    ) -> Result<(), FacilitatorLocalError> {
-        let expected: TokenAmount = requirements.max_amount_required;
-        if payload.amount != expected {
-            return Err(FacilitatorLocalError::InsufficientValue(
-                payload.from.clone().into(),
+            let signer = Signer::new(gear_api.clone(), suri.as_str(), None).map_err(|e| {
+                FacilitatorLocalError::InvalidSigner(format!("Failed to create Signer: {e}"))
+            })?;
+            (gear_api, signer)
+        } else {
+            return Err(FacilitatorLocalError::InvalidSigner(
+                "signer_suri must be provided".to_string(),
             ));
-        }
-        Ok(())
-    }
+        };
 
-    fn ensure_time_window(
-        &self,
-        payload: &VaraPaymentPayload,
-        payer: &MixedAddress,
-    ) -> Result<(), FacilitatorLocalError> {
-        let now = UnixTimestamp::try_now().map_err(FacilitatorLocalError::ClockError)?;
-        if payload.valid_after > now {
-            return Err(FacilitatorLocalError::InvalidTiming(
-                payer.clone(),
-                "payment not yet valid".to_string(),
-            ));
-        }
-        if payload.valid_before <= now {
-            return Err(FacilitatorLocalError::InvalidTiming(
-                payer.clone(),
-                "payment authorization expired".to_string(),
-            ));
-        }
-        Ok(())
-    }
-
-    fn extract_payload<'a>(
-        &'a self,
-        request: &'a VerifyRequest,
-    ) -> Result<&'a VaraPaymentPayload, FacilitatorLocalError> {
-        match &request.payment_payload.payload {
-            ExactPaymentPayload::Vara(payload) => Ok(&payload.payload),
-            _ => Err(FacilitatorLocalError::UnsupportedNetwork(None)),
-        }
+        Ok(Self {
+            chain,
+            rpc_client: gear_api,
+            signer_address: ActorId::from_str(&signer.address()).expect("Valid address"),
+            signer,
+        })
     }
 
     fn stubbed_verify(&self, payer: MixedAddress) -> VerifyResponse {
@@ -187,22 +122,66 @@ impl VaraProvider {
         )
     }
 
-    fn stubbed_settle_response(&self, payer: MixedAddress) -> SettleResponse {
-        SettleResponse {
-            success: false,
-            error_reason: Some(FacilitatorErrorReason::FreeForm(
-                "vara settlement not implemented".to_string(),
-            )),
-            payer,
-            transaction: None,
-            network: self.network(),
+    async fn verify_transfer(
+        &self,
+        request: &VerifyRequest,
+    ) -> Result<VerifyTransferResult, FacilitatorLocalError> {
+        let payload = &request.payment_payload;
+        let requirements = &request.payment_requirements;
+
+        // Assert valid payment START
+        let payment_payload = match &payload.payload {
+            ExactPaymentPayload::Evm(..) => {
+                return Err(FacilitatorLocalError::UnsupportedNetwork(None));
+            }
+            ExactPaymentPayload::Solana(..) => {
+                return Err(FacilitatorLocalError::UnsupportedNetwork(None));
+            }
+            ExactPaymentPayload::Vara(payload) => payload,
+        };
+        if payload.network != self.network() {
+            return Err(FacilitatorLocalError::NetworkMismatch(
+                None,
+                self.network(),
+                payload.network,
+            ));
         }
+        if requirements.network != self.network() {
+            return Err(FacilitatorLocalError::NetworkMismatch(
+                None,
+                self.network(),
+                requirements.network,
+            ));
+        }
+        if payload.scheme != requirements.scheme {
+            return Err(FacilitatorLocalError::SchemeMismatch(
+                None,
+                requirements.scheme,
+                payload.scheme,
+            ));
+        }
+        let transaction_b64_string = payment_payload.transaction.clone();
+        // let bytes = Base64Bytes::from(transaction_b64_string.as_bytes())
+        //     .decode()
+        //     .map_err(|e| FacilitatorLocalError::DecodingError(format!("{e}")))?;
+        // let transaction = bincode::deserialize::<VersionedTransaction>(bytes.as_slice())
+        //     .map_err(|e| FacilitatorLocalError::DecodingError(format!("{e}")))?;
+
+        // let payer: SolanaAddress = transfer_instruction.authority.into();
+        // Ok(VerifyTransferResult { payer, transaction })
+        todo!()
     }
+}
+
+
+pub struct VerifyTransferResult {
+    pub payer: VaraAddress,
+    pub transaction: TxInBlock,
 }
 
 impl NetworkProviderOps for VaraProvider {
     fn signer_address(&self) -> MixedAddress {
-        self.config.signer_address.clone().into()
+        self.signer_address.into()
     }
 
     fn network(&self) -> Network {
@@ -214,25 +193,20 @@ impl Facilitator for VaraProvider {
     type Error = FacilitatorLocalError;
 
     async fn verify(&self, request: &VerifyRequest) -> Result<VerifyResponse, Self::Error> {
-        self.ensure_scheme(request)?;
-        let payload = self.extract_payload(request)?;
-        let payer: MixedAddress = payload.from.clone().into();
-        self.ensure_network(request, Some(payer.clone()))?;
-        self.ensure_receiver(payload, &request.payment_requirements, &payer)?;
-        self.ensure_amount(payload, &request.payment_requirements)?;
-        self.ensure_time_window(payload, &payer)?;
-        Ok(self.stubbed_verify(payer))
+        let verification = self.verify_transfer(request).await?;
+        Ok(VerifyResponse::valid(verification.payer.into()))
     }
 
     async fn settle(&self, request: &SettleRequest) -> Result<SettleResponse, Self::Error> {
-        self.ensure_scheme(request)?;
-        let payload = self.extract_payload(request)?;
-        let payer: MixedAddress = payload.from.clone().into();
-        self.ensure_network(request, Some(payer.clone()))?;
-        self.ensure_receiver(payload, &request.payment_requirements, &payer)?;
-        self.ensure_amount(payload, &request.payment_requirements)?;
-        self.ensure_time_window(payload, &payer)?;
-        Ok(self.stubbed_settle_response(payer))
+        let verification = self.verify_transfer(request).await?;
+        todo!()
+        // Ok(SettleResponse {
+        //     success: true,
+        //     error_reason: None,
+        //     payer,
+        //     transaction: Some(TransactionHash::Vara(transaction_hash.into_bytes())),
+        //     network: self.network(),
+        // })
     }
 
     async fn supported(&self) -> Result<SupportedPaymentKindsResponse, Self::Error> {

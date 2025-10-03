@@ -110,4 +110,7 @@ pub enum FacilitatorLocalError {
     /// The payload decoding failed.
     #[error("Decoding error: {0}")]
     DecodingError(String),
+    /// Signing error (e.g. invalid SURI, unable to sign).
+    #[error("Signing error: {0}")]
+    InvalidSigner(String),
 }

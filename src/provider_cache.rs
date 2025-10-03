@@ -52,6 +52,7 @@ const ENV_RPC_VARA: &str = "RPC_URL_VARA";
 const ENV_RPC_VARA_TESTNET: &str = "RPC_URL_VARA_TESTNET";
 const ENV_VARA_SIGNER_ADDRESS: &str = "VARA_SIGNER_ADDRESS";
 const ENV_VARA_SIGNER_SURI: &str = "VARA_SIGNER_SURI";
+const ENV_VARA_PRIVATE_KEY: &str = "VARA_PRIVATE_KEY";
 
 /// A cache of pre-initialized [`EthereumProvider`] instances keyed by network.
 ///
@@ -164,16 +165,21 @@ impl ProviderCache {
                         );
                     }
                     NetworkFamily::Vara => {
-                        let signer_address = env::var(ENV_VARA_SIGNER_ADDRESS)
-                            .map_err(|_| format!("env {ENV_VARA_SIGNER_ADDRESS} not set"))?;
-                        let signer_address = VaraAddress::from_ss58(&signer_address)
-                            .map_err(|e| format!("invalid Vara signer address: {e}"))?;
-                        let signer_suri = env::var(ENV_VARA_SIGNER_SURI).ok();
-                        let config =
-                            VaraConfig::new(*network, rpc_url.clone(), signer_address, signer_suri);
-                        let provider = VaraProvider::try_new(config).await.map_err(|e| {
-                            format!("failed to initialize Vara provider for {network}: {e}")
-                        })?;
+                        // Try private key first, fall back to address + SURI for backward compatibility
+                        let provider = if let Ok(signer_suri) = env::var(ENV_VARA_SIGNER_SURI) {
+                            // Fallback to old method for backward compatibility
+                            let signer_address = env::var(ENV_VARA_SIGNER_ADDRESS)
+                                .map_err(|_| format!("env {ENV_VARA_SIGNER_ADDRESS} not set (or use {ENV_VARA_PRIVATE_KEY} instead)"))?;
+                            let signer_address = VaraAddress::from_ss58(&signer_address)
+                                .map_err(|e| format!("invalid Vara signer address: {e}"))?;
+                            let config = VaraConfig::new(*network, rpc_url.clone(), signer_address, Some(signer_suri));
+                            VaraProvider::try_new(config).await.map_err(|e| {
+                                format!("failed to initialize Vara provider for {network}: {e}")
+                            })?
+                        } else {
+                            return Err(format!("env {ENV_VARA_SIGNER_SURI} not set").into());
+                        };
+
                         let provider = NetworkProvider::Vara(provider);
                         let signer_address = provider.signer_address();
                         providers.insert(*network, provider);

@@ -186,6 +186,13 @@ impl IntoResponse for FacilitatorLocalError {
                 )),
             )
                 .into_response(),
+            FacilitatorLocalError::InvalidSigner(reason) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Signing error: {reason}"),
+                }),
+            )
+                .into_response(),
         }
     }
 }

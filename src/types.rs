@@ -11,6 +11,8 @@ use alloy::primitives::{Bytes, U256};
 use alloy::{hex, sol};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as b64;
+use blake2::Blake2b;
+use gprimitives::ActorId;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use rust_decimal::Decimal;
@@ -285,9 +287,7 @@ pub struct ExactSolanaPayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExactVaraPayload {
-    pub payload: VaraPaymentPayload,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<VaraPayloadMetadata>,
+    pub transaction: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -567,6 +567,12 @@ impl From<U256> for TokenAmount {
     }
 }
 
+impl From<gprimitives::U256> for TokenAmount {
+    fn from(value: gprimitives::U256) -> Self {
+        TokenAmount(U256::from_limbs(value.0))
+    }
+}
+
 impl<T: Into<TokenAmount>> Add<T> for TokenAmount {
     type Output = TokenAmount;
 
@@ -668,35 +674,35 @@ fn decode_ss58_bytes(value: &str) -> Result<[u8; 32], VaraAddressError> {
 
 /// SS58-encoded address on Vara Network.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct VaraAddress {
-    account_id: [u8; 32],
-    ss58: String,
-}
+pub struct VaraAddress (pub gprimitives::ActorId);
 
 impl VaraAddress {
     /// Parse a SS58-encoded address into a [`VaraAddress`].
     pub fn from_ss58(address: &str) -> Result<Self, VaraAddressError> {
         let account_id = decode_ss58_bytes(address)?;
-        Ok(Self {
-            account_id,
-            ss58: address.to_string(),
-        })
+        let actor_id = ActorId::from(account_id);
+        Ok(Self(actor_id))
     }
 
     /// Return the SS58 representation of the address.
     pub fn to_ss58(&self) -> String {
-        self.ss58.clone()
+        self.0.to_ss58check().unwrap().to_string()
     }
 
     /// Return the raw 32-byte account identifier.
     pub fn account_id(&self) -> [u8; 32] {
-        self.account_id
+        self.0.into()
+    }
+
+    /// Return the underlying `ActorId`.
+    pub fn actor_id(&self) -> ActorId {
+        self.0
     }
 }
 
 impl std::fmt::Display for VaraAddress {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.ss58)
+        write!(f, "{}", self.to_ss58())
     }
 }
 
@@ -710,66 +716,16 @@ impl std::str::FromStr for VaraAddress {
 
 impl Serialize for VaraAddress {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
     {
-        serializer.serialize_str(&self.ss58)
+        serializer.serialize_str(&self.to_ss58())
     }
 }
 
 impl<'de> Deserialize<'de> for VaraAddress {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
         VaraAddress::from_ss58(&s).map_err(serde::de::Error::custom)
-    }
-}
-
-/// Vara program identifier wrapper.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct VaraProgramId {
-    bytes: [u8; 32],
-    ss58: String,
-}
-
-impl VaraProgramId {
-    pub fn from_ss58(program_id: &str) -> Result<Self, VaraAddressError> {
-        let bytes = decode_ss58_bytes(program_id)?;
-        Ok(Self {
-            bytes,
-            ss58: program_id.to_string(),
-        })
-    }
-
-    #[allow(dead_code)]
-    pub fn to_ss58(&self) -> String {
-        self.ss58.clone()
-    }
-
-    #[allow(dead_code)]
-    pub fn as_bytes(&self) -> [u8; 32] {
-        self.bytes
-    }
-}
-
-impl Serialize for VaraProgramId {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.ss58)
-    }
-}
-
-impl<'de> Deserialize<'de> for VaraProgramId {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        VaraProgramId::from_ss58(&s).map_err(serde::de::Error::custom)
     }
 }
 
@@ -779,8 +735,6 @@ pub struct VaraNonce(pub [u8; 32]);
 
 impl Serialize for VaraNonce {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
     {
         let encoded = b64.encode(self.0);
         serializer.serialize_str(&encoded)
@@ -789,8 +743,6 @@ impl Serialize for VaraNonce {
 
 impl<'de> Deserialize<'de> for VaraNonce {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
         let decoded = b64
@@ -809,8 +761,6 @@ pub struct VaraSignature(pub Vec<u8>);
 
 impl Serialize for VaraSignature {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
     {
         let encoded = b64.encode(&self.0);
         serializer.serialize_str(&encoded)
@@ -819,8 +769,6 @@ impl Serialize for VaraSignature {
 
 impl<'de> Deserialize<'de> for VaraSignature {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
         let decoded = b64
@@ -830,28 +778,27 @@ impl<'de> Deserialize<'de> for VaraSignature {
     }
 }
 
-/// Vara Network fungible token payment payload.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VaraPaymentPayload {
-    pub contract_id: VaraProgramId,
-    pub from: VaraAddress,
-    pub to: VaraAddress,
-    pub amount: TokenAmount,
-    pub valid_after: UnixTimestamp,
-    pub valid_before: UnixTimestamp,
-    pub nonce: VaraNonce,
-    pub signature: VaraSignature,
-}
+// /// Vara Network fungible token payment payload.
+// #[derive(Debug, Clone, Serialize, Deserialize)]
+// #[serde(rename_all = "camelCase")]
+// pub struct VaraPaymentPayload {
+//     pub contract_id: ActorId,
+//     pub from: ActorId,
+//     pub to: ActorId,
+//     pub amount: gprimitives::U256,
+//     pub valid_after: UnixTimestamp,
+//     pub valid_before: UnixTimestamp,
+//     pub nonce: VaraNonce,
+//     pub signature: VaraSignature,
+// }
 
-/// Optional metadata that augments a Vara payment payload with execution hints.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VaraPayloadMetadata {
-    pub gas_limit: u64,
-    pub value: TokenAmount,
-    pub tip: TokenAmount,
-}
+// /// Optional metadata that augments a Vara payment payload with execution hints.
+// #[derive(Debug, Clone, Serialize, Deserialize)]
+// #[serde(rename_all = "camelCase")]
+// pub struct VaraPayloadMetadata {
+//     pub gas_limit: u64,
+//     pub value: TokenAmount,
+// }
 
 /// Represents either an EVM address (0x...), or an off-chain address, or Solana address.
 /// The format is used for routing settlement.
@@ -887,11 +834,19 @@ impl From<Pubkey> for MixedAddress {
     }
 }
 
+impl From<ActorId> for MixedAddress {
+    fn from(value: ActorId) -> Self {
+        MixedAddress::Vara(VaraAddress(value))
+    }
+}
+
+
 impl From<VaraAddress> for MixedAddress {
     fn from(value: VaraAddress) -> Self {
         MixedAddress::Vara(value)
     }
 }
+
 
 impl From<alloy::primitives::Address> for MixedAddress {
     fn from(value: alloy::primitives::Address) -> Self {
@@ -1005,7 +960,7 @@ impl Serialize for MixedAddress {
             MixedAddress::Evm(addr) => serializer.serialize_str(&addr.to_string()),
             MixedAddress::Offchain(s) => serializer.serialize_str(s),
             MixedAddress::Solana(pubkey) => serializer.serialize_str(pubkey.to_string().as_str()),
-            MixedAddress::Vara(address) => serializer.serialize_str(&address.to_ss58()),
+            MixedAddress::Vara(address) => serializer.serialize_str(&address.to_string()),
         }
     }
 }
