@@ -49,7 +49,7 @@ mod types;
 ///
 /// - Loads `.env` variables.
 /// - Initializes OpenTelemetry tracing.
-/// - Connects to Ethereum providers for supported networks.
+/// - Connects to providers for supported networks.
 /// - Starts an Axum HTTP server with the x402 protocol handlers.
 ///
 /// Binds to the address specified by the `HOST` and `PORT` env vars.
@@ -64,9 +64,9 @@ async fn main() {
         .register();
 
     let provider_cache = ProviderCache::from_env().await;
-    // Abort if we can't initialize Ethereum providers early
+    // Abort if we can't initialize providers early
     if let Err(e) = provider_cache {
-        tracing::error!("Failed to create Ethereum providers: {}", e);
+        tracing::error!("Failed to create providers: {}", e);
         std::process::exit(1);
     }
     let facilitator = FacilitatorLocal::new(provider_cache.unwrap());

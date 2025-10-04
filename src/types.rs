@@ -11,7 +11,6 @@ use alloy::primitives::{Bytes, U256};
 use alloy::{hex, sol};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as b64;
-use blake2::Blake2b;
 use gprimitives::ActorId;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -283,11 +282,57 @@ pub struct ExactSolanaPayload {
     pub transaction: String,
 }
 
-/// Vara Network fungible token transfer payload and optional metadata used for exact payments.
+/// Vara transfer authorization used for x402 "exact" payments.
+/// Enables gasless/relayed settlement similar to ERC-3009 on EVM.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaraTransferAuthorization {
+    /// VFT service/program address on Vara (ActorId).
+    pub contract_id: gprimitives::ActorId,
+    /// Payer (SS58 on-wire; wraps ActorId).
+    pub from: VaraAddress,
+    /// Payee (SS58 on-wire; wraps ActorId).
+    pub to: VaraAddress,
+    /// Exact token amount in base units; SCALE-compatible with on-chain VFT.
+    pub amount: gprimitives::U256,
+    /// Earliest timestamp (inclusive) when the auth becomes valid.
+    pub valid_after: UnixTimestamp,
+    /// Latest timestamp (inclusive) when the auth remains valid.
+    pub valid_before: UnixTimestamp,
+    /// Unique 32-byte nonce to prevent replay.
+    pub nonce: VaraNonce,
+}
+
+/// Signature scheme for verifying `VaraTransferAuthorization`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VaraSigScheme {
+    Sr25519,
+    Ed25519,
+    Ecdsa,
+}
+
+/// Optional execution hints for the relayer; NOT part of the signed message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaraPayloadMetadata {
+    /// Gas limit for the Gear message execution.
+    pub gas_limit: u64,
+    /// Optional value attached to the message in base units.
+    pub value: TokenAmount,
+}
+
+/// x402 exact payment payload for Vara (VFT).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExactVaraPayload {
-    pub transaction: String,
+    // Path A (relayer): we’ll read owner/spender from requirements.extra and the runtime state
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<VaraPayloadMetadata>,   // gas_limit/value hints for relayer
+
+    // Path B (self-signed): payer-provided SCALE extrinsic (base64)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transaction: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -674,7 +719,7 @@ fn decode_ss58_bytes(value: &str) -> Result<[u8; 32], VaraAddressError> {
 
 /// SS58-encoded address on Vara Network.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct VaraAddress (pub gprimitives::ActorId);
+pub struct VaraAddress(pub gprimitives::ActorId);
 
 impl VaraAddress {
     /// Parse a SS58-encoded address into a [`VaraAddress`].
@@ -715,15 +760,13 @@ impl std::str::FromStr for VaraAddress {
 }
 
 impl Serialize for VaraAddress {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&self.to_ss58())
     }
 }
 
 impl<'de> Deserialize<'de> for VaraAddress {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error>
-    {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
         VaraAddress::from_ss58(&s).map_err(serde::de::Error::custom)
     }
@@ -734,16 +777,14 @@ impl<'de> Deserialize<'de> for VaraAddress {
 pub struct VaraNonce(pub [u8; 32]);
 
 impl Serialize for VaraNonce {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let encoded = b64.encode(self.0);
         serializer.serialize_str(&encoded)
     }
 }
 
 impl<'de> Deserialize<'de> for VaraNonce {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error>
-    {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
         let decoded = b64
             .decode(s.as_bytes())
@@ -754,51 +795,6 @@ impl<'de> Deserialize<'de> for VaraNonce {
         Ok(VaraNonce(array))
     }
 }
-
-/// Vara signature bytes encoded as base64.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct VaraSignature(pub Vec<u8>);
-
-impl Serialize for VaraSignature {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    {
-        let encoded = b64.encode(&self.0);
-        serializer.serialize_str(&encoded)
-    }
-}
-
-impl<'de> Deserialize<'de> for VaraSignature {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error>
-    {
-        let s = String::deserialize(deserializer)?;
-        let decoded = b64
-            .decode(s.as_bytes())
-            .map_err(|_| serde::de::Error::custom("invalid Vara signature"))?;
-        Ok(VaraSignature(decoded))
-    }
-}
-
-// /// Vara Network fungible token payment payload.
-// #[derive(Debug, Clone, Serialize, Deserialize)]
-// #[serde(rename_all = "camelCase")]
-// pub struct VaraPaymentPayload {
-//     pub contract_id: ActorId,
-//     pub from: ActorId,
-//     pub to: ActorId,
-//     pub amount: gprimitives::U256,
-//     pub valid_after: UnixTimestamp,
-//     pub valid_before: UnixTimestamp,
-//     pub nonce: VaraNonce,
-//     pub signature: VaraSignature,
-// }
-
-// /// Optional metadata that augments a Vara payment payload with execution hints.
-// #[derive(Debug, Clone, Serialize, Deserialize)]
-// #[serde(rename_all = "camelCase")]
-// pub struct VaraPayloadMetadata {
-//     pub gas_limit: u64,
-//     pub value: TokenAmount,
-// }
 
 /// Represents either an EVM address (0x...), or an off-chain address, or Solana address.
 /// The format is used for routing settlement.
@@ -840,13 +836,11 @@ impl From<ActorId> for MixedAddress {
     }
 }
 
-
 impl From<VaraAddress> for MixedAddress {
     fn from(value: VaraAddress) -> Self {
         MixedAddress::Vara(value)
     }
 }
-
 
 impl From<alloy::primitives::Address> for MixedAddress {
     fn from(value: alloy::primitives::Address) -> Self {
