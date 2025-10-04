@@ -138,7 +138,7 @@ pub enum FacilitatorClientError {
     JsonDeserialization {
         context: &'static str,
         #[source]
-        source: reqwest::Error,
+        source: serde_json::Error,
     },
     #[error("Unexpected HTTP status {status}: {context}: {body}")]
     HttpStatus {
@@ -257,7 +257,9 @@ impl FacilitatorClient {
     }
 
     pub async fn supported(&self) -> Result<SupportedPaymentKindsResponse, FacilitatorClientError> {
-        self.get_json(&self.supported_url, "GET /supported").await
+        let res = self.get_json(&self.supported_url, "GET /supported").await;
+        tracing::debug!(?res, "Supported payment kinds response");
+        res
     }
 
     /// Generic POST helper that handles JSON serialization, error mapping,
@@ -287,9 +289,19 @@ impl FacilitatorClient {
             .map_err(|e| FacilitatorClientError::Http { context, source: e })?;
 
         let result = if http_response.status() == StatusCode::OK {
-            http_response
-                .json::<R>()
+            let bytes = http_response
+                .bytes()
                 .await
+                .map_err(|e| FacilitatorClientError::ResponseBodyRead { context, source: e })?;
+            if tracing::enabled!(tracing::Level::DEBUG) {
+                tracing::debug!(
+                    target: "x402_axum::facilitator_client",
+                    %context,
+                    body = %String::from_utf8_lossy(&bytes),
+                    "Received facilitator JSON response"
+                );
+            }
+            serde_json::from_slice::<R>(&bytes)
                 .map_err(|e| FacilitatorClientError::JsonDeserialization { context, source: e })
         } else {
             let status = http_response.status();
@@ -334,9 +346,19 @@ impl FacilitatorClient {
             .map_err(|e| FacilitatorClientError::Http { context, source: e })?;
 
         let result = if http_response.status() == StatusCode::OK {
-            http_response
-                .json::<R>()
+            let bytes = http_response
+                .bytes()
                 .await
+                .map_err(|e| FacilitatorClientError::ResponseBodyRead { context, source: e })?;
+            if tracing::enabled!(tracing::Level::DEBUG) {
+                tracing::debug!(
+                    target: "x402_axum::facilitator_client",
+                    %context,
+                    body = %String::from_utf8_lossy(&bytes),
+                    "Received facilitator JSON response"
+                );
+            }
+            serde_json::from_slice::<R>(&bytes)
                 .map_err(|e| FacilitatorClientError::JsonDeserialization { context, source: e })
         } else {
             let status = http_response.status();

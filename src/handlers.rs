@@ -66,12 +66,15 @@ pub async fn get_supported(
     Extension(facilitator): Extension<FacilitatorLocal>,
 ) -> impl IntoResponse {
     let kinds = facilitator.kinds();
-    (
+    tracing::debug!(?kinds, "Serving supported kinds");
+    let res = (
         StatusCode::OK,
         Json(json!({
             "kinds": kinds,
         })),
-    )
+    );
+    tracing::debug!(?res, "Supported payment kinds response");
+    res
 }
 
 pub async fn get_health(Extension(facilitator): Extension<FacilitatorLocal>) -> impl IntoResponse {

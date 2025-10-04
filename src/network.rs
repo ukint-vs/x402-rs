@@ -3,7 +3,7 @@
 //! This module defines supported networks and their chain IDs,
 //! and provides statically known USDC deployments per network.
 
-use crate::types::{MixedAddress, TokenAsset, TokenDeployment, TokenDeploymentEip712};
+use crate::types::{MixedAddress, TokenAsset, TokenDeployment, TokenDeploymentEip712, VaraAddress};
 use alloy::primitives::address;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -305,6 +305,21 @@ static USDC_SEI_TESTNET: Lazy<USDCDeployment> = Lazy::new(|| {
     })
 });
 
+/// Lazily initialized known USDC deployment on Solana mainnet as [`USDCDeployment`].
+static USDC_VARA: Lazy<USDCDeployment> = Lazy::new(|| {
+    USDCDeployment(TokenDeployment {
+        asset: TokenAsset {
+            address: MixedAddress::Vara(
+                VaraAddress::from_ss58("kGk7kiPCjg4TPKZTnp32psagb6t5aJir4GBNekY937mqZKufN")
+                    .unwrap(),
+            ),
+            network: Network::VaraTestnet,
+        },
+        decimals: 12,
+        eip712: None,
+    })
+});
+
 /// A known USDC deployment as a wrapper around [`TokenDeployment`].
 #[derive(Clone, Debug)]
 pub struct USDCDeployment(pub TokenDeployment);
@@ -352,9 +367,7 @@ impl USDCDeployment {
             Network::Polygon => &USDC_POLYGON,
             Network::Sei => &USDC_SEI,
             Network::SeiTestnet => &USDC_SEI_TESTNET,
-            Network::Vara | Network::VaraTestnet => {
-                panic!("USDC deployment is not defined for Vara networks")
-            }
+            Network::Vara | Network::VaraTestnet => &USDC_VARA,
         }
     }
 }

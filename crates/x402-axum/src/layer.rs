@@ -83,6 +83,8 @@ use tracing::{Instrument, Level, instrument};
 use crate::facilitator_client::{FacilitatorClient, FacilitatorClientError};
 use crate::price::PriceTag;
 
+const VARA_OWNER_HEADER: &str = "X-Vara-Owner";
+
 /// Middleware layer that enforces x402 payment verification and settlement.
 ///
 /// Wraps an Axum service, intercepts incoming HTTP requests, verifies the payment
@@ -483,9 +485,14 @@ where
                             .cloned()
                             .and_then(|s| s.extra);
                         if let Some(extra) = extra {
-                            r.extra = Some(json!({
-                                "feePayer": extra.fee_payer
-                            }));
+                            let mut map = r
+                                .extra
+                                .take()
+                                .and_then(|v| v.as_object().cloned())
+                                .unwrap_or_default();
+                            map.insert("spender".to_string(), json!(extra.fee_payer));
+                            map.insert("ownerHeader".to_string(), json!(VARA_OWNER_HEADER));
+                            r.extra = Some(serde_json::Value::Object(map));
                             r
                         } else {
                             r
@@ -529,17 +536,60 @@ where
     pub async fn verify_payment(
         &self,
         payment_payload: PaymentPayload,
+        headers: &HeaderMap,
     ) -> Result<VerifyRequest, X402Error> {
-        let selected = self
+        let mut selected = self
             .find_matching_payment_requirements(&payment_payload)
             .ok_or(X402Error::no_payment_matching(
                 self.payment_requirements.as_ref().clone(),
             ))?;
+
+        if let Some(owner_val) = headers.get(VARA_OWNER_HEADER).and_then(|h| h.to_str().ok()) {
+            let mut map = selected
+                .extra
+                .take()
+                .and_then(|v| v.as_object().cloned())
+                .unwrap_or_default();
+            map.insert("owner".to_string(), json!(owner_val));
+            selected.extra = Some(serde_json::Value::Object(map));
+        }
+
+        if let Ok(supported) = self.facilitator.supported().await {
+            tracing::debug!(?supported, "Fetched facilitator supported kinds");
+            if let Some(kind) = supported
+                .kinds
+                .iter()
+                .find(|k| k.network == selected.network)
+            {
+                if let Some(ex) = kind.extra.as_ref() {
+                    let mut map = selected
+                        .extra
+                        .take()
+                        .and_then(|v| v.as_object().cloned())
+                        .unwrap_or_default();
+                    tracing::debug!(
+                        network = %selected.network,
+                        spender = %ex.fee_payer,
+                        "Injecting relayer spender into payment requirements"
+                    );
+                    map.insert("spender".to_string(), json!(ex.fee_payer.clone()));
+                    selected.extra = Some(serde_json::Value::Object(map));
+                }
+            }
+        }
+
+        tracing::debug!(network = %selected.network, extra = ?selected.extra, "Payment requirements after merge");
+
         let verify_request = VerifyRequest {
             x402_version: payment_payload.x402_version,
             payment_payload,
             payment_requirements: selected,
         };
+        tracing::debug!(
+            network = %verify_request.payment_requirements.network,
+            extra = ?verify_request.payment_requirements.extra,
+            "Built verify request"
+        );
         let verify_response = self
             .facilitator
             .verify(&verify_request)
@@ -627,7 +677,7 @@ where
                 return err.into_response();
             }
         };
-        let verify_request = match self.verify_payment(payment_payload).await {
+        let verify_request = match self.verify_payment(payment_payload, req.headers()).await {
             Ok(verify_request) => verify_request,
             Err(err) => return err.into_response(),
         };

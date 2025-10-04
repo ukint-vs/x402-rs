@@ -164,7 +164,9 @@ impl ProviderCache {
                     NetworkFamily::Vara => {
                         // Try private key first, fall back to address + SURI for backward compatibility
                         let provider = if let Ok(signer_suri) = env::var(ENV_VARA_SIGNER_SURI) {
-                            let config = VaraConfig::new(*network, rpc_url.clone(), Some(signer_suri));
+                            tracing::info!("Creating VaraProvider with SURI: {}", signer_suri);
+                            let config =
+                                VaraConfig::new(*network, rpc_url.clone(), Some(signer_suri));
                             VaraProvider::try_new(config).await.map_err(|e| {
                                 format!("failed to initialize Vara provider for {network}: {e}")
                             })?

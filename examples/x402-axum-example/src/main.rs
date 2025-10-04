@@ -11,7 +11,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use x402_axum::{IntoPriceTag, X402Middleware};
 use x402_rs::network::{Network, USDCDeployment};
 use x402_rs::telemetry::Telemetry;
-use x402_rs::{address_evm, address_sol};
+use x402_rs::{address_evm, address_sol, address_vara};
 
 #[tokio::main]
 async fn main() {
@@ -22,8 +22,7 @@ async fn main() {
         .with_version(env!("CARGO_PKG_VERSION"))
         .register();
 
-    let facilitator_url =
-        env::var("FACILITATOR_URL").unwrap_or_else(|_| "https://facilitator.x402.rs".to_string());
+    let facilitator_url = "http://localhost:8080".to_string();
 
     let x402 = X402Middleware::try_from(facilitator_url)
         .unwrap()
@@ -32,6 +31,9 @@ async fn main() {
         .pay_to(address_evm!("0xBAc675C310721717Cd4A37F6cbeA1F081b1C2a07"));
     let usdc_solana = USDCDeployment::by_network(Network::Solana)
         .pay_to(address_sol!("EGBQqKn968sVv5cQh5Cr72pSTHfxsuzq7o7asqYB5uEV"));
+    let usdc_vara = USDCDeployment::by_network(Network::VaraTestnet).pay_to(address_vara!(
+        "kGgadEFYMeg1gsYrbCyLdcSLa8HzR4x2RSj7Mep2RobUq8fao"
+    ));
 
     let app = Router::new()
         .route(
@@ -39,8 +41,7 @@ async fn main() {
             get(my_handler).layer(
                 x402.with_description("Premium API")
                     .with_mime_type("application/json")
-                    .with_price_tag(usdc_solana.amount(0.0025).unwrap())
-                    .or_price_tag(usdc_base_sepolia.amount(0.0025).unwrap()),
+                    .with_price_tag(usdc_vara.amount(0.0025).unwrap()),
             ),
         )
         .layer(

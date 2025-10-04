@@ -9,7 +9,10 @@
 //! - EIP-712-based payload construction and signing
 //! - Base64 encoding into a payment header
 
-use http::{Extensions, HeaderValue, StatusCode};
+use http::{
+    Extensions, HeaderValue, StatusCode,
+    header::{HeaderName, InvalidHeaderName},
+};
 use reqwest::{Request, Response};
 use reqwest_middleware as rqm;
 use std::collections::HashMap;
@@ -109,6 +112,9 @@ pub enum X402PaymentsError {
     /// Typically caused by invalid characters or excessive length.
     #[error("Failed to encode payment payload to HTTP header")]
     HeaderValueEncodeError(#[source] http::header::InvalidHeaderValue),
+    /// Raised when a provided header name is invalid.
+    #[error("Failed to encode header name")]
+    HeaderNameEncodeError(#[source] InvalidHeaderName),
 }
 
 impl From<X402PaymentsError> for rqm::Error {
@@ -141,6 +147,7 @@ pub struct X402Payments {
     wallets: Vec<Arc<dyn SenderWallet>>,
     max_token_amount: HashMap<TokenAsset, TokenAmount>,
     prefer: Vec<TokenAsset>,
+    vara_owner: Option<String>,
 }
 
 impl X402Payments {
@@ -149,6 +156,7 @@ impl X402Payments {
             wallets: vec![wallet.into_sender_wallet()],
             max_token_amount: HashMap::new(),
             prefer: vec![],
+            vara_owner: None,
         }
     }
 
@@ -159,6 +167,7 @@ impl X402Payments {
             wallets,
             max_token_amount: self.max_token_amount,
             prefer: self.prefer,
+            vara_owner: self.vara_owner,
         }
     }
 
@@ -173,6 +182,13 @@ impl X402Payments {
     pub fn prefer<T: Into<Vec<TokenAsset>>>(&self, prefer: T) -> Self {
         let mut this = self.clone();
         this.prefer.append(&mut prefer.into());
+        this
+    }
+
+    /// Provide the payer's Vara SS58 address so the middleware can attach the header expected by the server.
+    pub fn vara_owner<S: Into<String>>(&self, owner_ss58: S) -> Self {
+        let mut this = self.clone();
+        this.vara_owner = Some(owner_ss58.into());
         this
     }
 
@@ -271,13 +287,25 @@ impl X402Payments {
     pub async fn build_payment_header(
         &self,
         accepts: &[PaymentRequirements],
-    ) -> Result<HeaderValue, X402PaymentsError> {
+    ) -> Result<(HeaderValue, Option<String>), X402PaymentsError> {
         let selected = self.select_payment_requirements(accepts)?;
         #[cfg(feature = "telemetry")]
         tracing::debug!(?selected, "Selected payment requirement");
         self.assert_max_amount(&selected)?;
-        let payment_payload = self.make_payment_payload(selected).await?;
-        Self::encode_payment_header(&payment_payload)
+        let wallet = self.wallets.iter().find(|w| w.can_handle(&selected));
+        let wallet = wallet.ok_or(X402PaymentsError::SigningError(
+            "No suitable wallet found".to_string(),
+        ))?;
+        wallet.approve_if_needed(&selected).await?;
+        let owner_header = selected
+            .extra
+            .as_ref()
+            .and_then(|v| v.as_object())
+            .and_then(|map| map.get("ownerHeader"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let payment_payload = wallet.payment_payload(selected).await?;
+        Self::encode_payment_header(&payment_payload).map(|header| (header, owner_header))
     }
 }
 
@@ -308,7 +336,7 @@ impl rqm::Middleware for X402Payments {
         let payment_required_response = res.json::<PaymentRequiredResponse>().await?;
 
         let retry_req = async {
-            let payment_header = self
+            let (payment_header, owner_header) = self
                 .build_payment_header(&payment_required_response.accepts)
                 .await?;
             let mut req = retry_req.ok_or(X402PaymentsError::RequestNotCloneable)?;
@@ -318,6 +346,17 @@ impl rqm::Middleware for X402Payments {
                 "Access-Control-Expose-Headers",
                 HeaderValue::from_static("X-Payment-Response"),
             );
+            if let (Some(owner_header), Some(owner_value)) =
+                (owner_header, self.vara_owner.as_deref())
+            {
+                let header_name = HeaderName::from_bytes(owner_header.as_bytes())
+                    .map_err(X402PaymentsError::HeaderNameEncodeError)?;
+                headers.insert(
+                    header_name,
+                    HeaderValue::from_str(owner_value)
+                        .map_err(X402PaymentsError::HeaderValueEncodeError)?,
+                );
+            }
             Ok::<Request, X402PaymentsError>(req)
         }
         .await

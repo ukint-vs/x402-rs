@@ -14,6 +14,14 @@ pub trait SenderWallet: Send + Sync {
         &self,
         selected: PaymentRequirements,
     ) -> Result<PaymentPayload, X402PaymentsError>;
+
+    /// Approve allowance if needed (default no-op)
+    async fn approve_if_needed(
+        &self,
+        _selected: &PaymentRequirements,
+    ) -> Result<(), X402PaymentsError> {
+        Ok(())
+    }
 }
 
 pub trait IntoSenderWallet {

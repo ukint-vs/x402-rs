@@ -326,13 +326,8 @@ pub struct VaraPayloadMetadata {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExactVaraPayload {
-    // Path A (relayer): we’ll read owner/spender from requirements.extra and the runtime state
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<VaraPayloadMetadata>,   // gas_limit/value hints for relayer
-
-    // Path B (self-signed): payer-provided SCALE extrinsic (base64)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub transaction: Option<String>,
+    // we’ll read owner/spender from requirements.extra and the runtime state
+    pub metadata: VaraPayloadMetadata, // gas_limit/value hints for relayer
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -701,22 +696,6 @@ impl From<u64> for TokenAmount {
 #[error("Invalid Vara address: {0}")]
 pub struct VaraAddressError(pub String);
 
-fn decode_ss58_bytes(value: &str) -> Result<[u8; 32], VaraAddressError> {
-    let decoded = bs58::decode(value)
-        .into_vec()
-        .map_err(|_| VaraAddressError(value.to_string()))?;
-
-    if decoded.len() < 35 {
-        return Err(VaraAddressError(value.to_string()));
-    }
-
-    let start = decoded.len() - 32;
-    let bytes: [u8; 32] = decoded[start..]
-        .try_into()
-        .map_err(|_| VaraAddressError(value.to_string()))?;
-    Ok(bytes)
-}
-
 /// SS58-encoded address on Vara Network.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct VaraAddress(pub gprimitives::ActorId);
@@ -724,14 +703,14 @@ pub struct VaraAddress(pub gprimitives::ActorId);
 impl VaraAddress {
     /// Parse a SS58-encoded address into a [`VaraAddress`].
     pub fn from_ss58(address: &str) -> Result<Self, VaraAddressError> {
-        let account_id = decode_ss58_bytes(address)?;
-        let actor_id = ActorId::from(account_id);
+        let actor_id =
+            ActorId::from_str(address).map_err(|_| VaraAddressError(address.to_string()))?;
         Ok(Self(actor_id))
     }
 
     /// Return the SS58 representation of the address.
     pub fn to_ss58(&self) -> String {
-        self.0.to_ss58check().unwrap().to_string()
+        self.0.to_ss58check_with_version(137).unwrap().to_string()
     }
 
     /// Return the raw 32-byte account identifier.
@@ -822,6 +801,16 @@ macro_rules! address_sol {
     ($s:literal) => {
         $crate::types::MixedAddress::Solana($crate::__reexports::solana_sdk::pubkey!($s))
     };
+}
+
+#[macro_export]
+macro_rules! address_vara {
+    ($s:literal) => {{
+        $crate::types::MixedAddress::Vara(
+            $crate::types::VaraAddress::from_ss58($s)
+                .expect("invalid Vara SS58 address in address_vara!()"),
+        )
+    }};
 }
 
 impl From<Pubkey> for MixedAddress {

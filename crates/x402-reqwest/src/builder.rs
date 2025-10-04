@@ -61,6 +61,14 @@ impl<A> ReqwestWithPaymentsBuilder<A> {
             x402: self.x402.prefer(prefer),
         }
     }
+
+    /// Attach the Vara payer address so the middleware can populate the required header automatically.
+    pub fn vara_owner<S: Into<String>>(self, owner_ss58: S) -> Self {
+        Self {
+            inner: self.inner,
+            x402: self.x402.vara_owner(owner_ss58),
+        }
+    }
 }
 
 /// A trait implemented for both builder variants to finalize the HTTP client.
