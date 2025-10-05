@@ -10,8 +10,8 @@
 //! - Base64 encoding into a payment header
 
 use http::{
-    Extensions, HeaderValue, StatusCode,
     header::{HeaderName, InvalidHeaderName},
+    Extensions, HeaderValue, StatusCode,
 };
 use reqwest::{Request, Response};
 use reqwest_middleware as rqm;
@@ -185,7 +185,8 @@ impl X402Payments {
         this
     }
 
-    /// Provide the payer's Vara SS58 address so the middleware can attach the header expected by the server.
+    /// Override the payer's Vara SS58 address when automatic detection is unavailable
+    /// (for example when using a custom wallet implementation).
     pub fn vara_owner<S: Into<String>>(&self, owner_ss58: S) -> Self {
         let mut this = self.clone();
         this.vara_owner = Some(owner_ss58.into());
@@ -287,7 +288,7 @@ impl X402Payments {
     pub async fn build_payment_header(
         &self,
         accepts: &[PaymentRequirements],
-    ) -> Result<(HeaderValue, Option<String>), X402PaymentsError> {
+    ) -> Result<(HeaderValue, Option<(String, String)>), X402PaymentsError> {
         let selected = self.select_payment_requirements(accepts)?;
         #[cfg(feature = "telemetry")]
         tracing::debug!(?selected, "Selected payment requirement");
@@ -305,7 +306,10 @@ impl X402Payments {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
         let payment_payload = wallet.payment_payload(selected).await?;
-        Self::encode_payment_header(&payment_payload).map(|header| (header, owner_header))
+        let owner_hint =
+            owner_header.and_then(|header| self.vara_owner.clone().map(|value| (header, value)));
+        let header = Self::encode_payment_header(&payment_payload)?;
+        Ok((header, owner_hint))
     }
 }
 
@@ -336,7 +340,7 @@ impl rqm::Middleware for X402Payments {
         let payment_required_response = res.json::<PaymentRequiredResponse>().await?;
 
         let retry_req = async {
-            let (payment_header, owner_header) = self
+            let (payment_header, owner_hint) = self
                 .build_payment_header(&payment_required_response.accepts)
                 .await?;
             let mut req = retry_req.ok_or(X402PaymentsError::RequestNotCloneable)?;
@@ -346,14 +350,12 @@ impl rqm::Middleware for X402Payments {
                 "Access-Control-Expose-Headers",
                 HeaderValue::from_static("X-Payment-Response"),
             );
-            if let (Some(owner_header), Some(owner_value)) =
-                (owner_header, self.vara_owner.as_deref())
-            {
+            if let Some((owner_header, owner_value)) = owner_hint {
                 let header_name = HeaderName::from_bytes(owner_header.as_bytes())
                     .map_err(X402PaymentsError::HeaderNameEncodeError)?;
                 headers.insert(
                     header_name,
-                    HeaderValue::from_str(owner_value)
+                    HeaderValue::from_str(&owner_value)
                         .map_err(X402PaymentsError::HeaderValueEncodeError)?,
                 );
             }

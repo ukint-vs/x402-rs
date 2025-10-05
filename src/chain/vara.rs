@@ -1,6 +1,6 @@
+use gclient::GearApi;
 use std::str::FromStr;
 use std::time::Duration;
-use gclient::GearApi;
 use tracing::{debug, info, warn};
 
 use crate::chain::{FacilitatorLocalError, NetworkProviderOps};
@@ -16,10 +16,10 @@ use sails_rs::calls::{Action, Call, Query};
 use extended_vft_client::traits::Vft;
 use gprimitives::ActorId;
 use gsdk::ext::sp_core;
-use gsdk::{Api, signer::Signer};
+use gsdk::{signer::Signer, Api};
 use parity_scale_codec::Encode;
-use sails_rs::U256;
 use sails_rs::gclient::calls::GClientRemoting;
+use sails_rs::U256;
 
 /// Vara network metadata describing RPC and timing parameters.
 #[derive(Clone, Debug)]
@@ -102,7 +102,8 @@ impl VaraProvider {
 
         Ok(Self {
             chain,
-            signer_address: ActorId::from_str(&gear_api.account_id().to_string()).expect("Valid address"),
+            signer_address: ActorId::from_str(&gear_api.account_id().to_string())
+                .expect("Valid address"),
             rpc_client: gear_api,
         })
     }
@@ -157,17 +158,27 @@ impl VaraProvider {
                 "missing `requirements.extra` for relayed Vara payments".into(),
             )
         })?;
-        // debug!("requirements.extra keys: {:?}", extra.keys().collect::<Vec<_>>());
 
         debug!("requirements.extra: {:?}", extra);
-        let owner_ss58 = extra.get("owner").and_then(|v| v.as_str()).ok_or_else(|| {
+        let extra_map = extra.as_object().ok_or_else(|| {
             FacilitatorLocalError::DecodingError(
-                "missing `owner` in requirements.extra (payer SS58)".into(),
+                "expected `requirements.extra` to be a JSON object".into(),
             )
         })?;
 
+        let owner_ss58 = extra_map
+            .get("owner")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                FacilitatorLocalError::DecodingError(
+                    "missing `owner` in requirements.extra (payer SS58)".into(),
+                )
+            })?;
+        let owner_id = parse_ss58(owner_ss58)?;
+        let payer: VaraAddress = VaraAddress(owner_id);
+
         // Ensure spender is present too (we don't compare here; settle() enforces spender==relayer)
-        let _spender_ss58 = extra
+        let _spender_ss58 = extra_map
             .get("spender")
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
@@ -175,9 +186,6 @@ impl VaraProvider {
                     "missing `spender` in requirements.extra (relayer SS58)".into(),
                 )
             })?;
-
-        let owner_id = parse_ss58(owner_ss58)?;
-        let payer: VaraAddress = VaraAddress(owner_id);
 
         // Correlation id for verify→settle; not an on-chain extrinsic hash.
         let corr = sp_core::blake2_256(owner_ss58.as_bytes());
@@ -199,7 +207,10 @@ impl VaraProvider {
         owner: ActorId,
         spender: ActorId,
     ) -> Result<U256, FacilitatorLocalError> {
-        info!("Reading allowance for asset {}, owner {}, spender {}", asset, owner, spender);
+        info!(
+            "Reading allowance for asset {}, owner {}, spender {}",
+            asset, owner, spender
+        );
         // Build a Sails remoting over the existing gsdk API client
         let remoting = GClientRemoting::new(self.rpc_client.clone().into());
         // Instantiate the generated VFT client bound to the target program (asset)
@@ -257,7 +268,7 @@ impl VaraProvider {
 }
 
 pub struct VerifyTransferResult {
-    /// Payer (owner) inferred from requirements.extra or decoded signer
+    /// Payer (owner) extracted from `requirements.extra`
     pub payer: VaraAddress,
     /// Exact token amount (base units)
     pub amount: TokenAmount,
@@ -319,16 +330,18 @@ impl Facilitator for VaraProvider {
         let program: ActorId = parse_ss58(requirements.asset.to_string())?;
         let to: ActorId = parse_ss58(requirements.pay_to.to_string())?;
 
-        // Parse `owner` and `spender` (relayer) from `extra`.
+        // Parse relayer (`spender`) from `extra`.
         let extra = requirements.extra.as_ref().ok_or_else(|| {
             FacilitatorLocalError::DecodingError(
                 "missing `requirements.extra` for relayer path".into(),
             )
         })?;
-        let owner_ss58 = extra.get("owner").and_then(|v| v.as_str()).ok_or_else(|| {
-            FacilitatorLocalError::DecodingError("missing `owner` in requirements.extra".into())
+        let extra_map = extra.as_object().ok_or_else(|| {
+            FacilitatorLocalError::DecodingError(
+                "expected `requirements.extra` to be a JSON object".into(),
+            )
         })?;
-        let spender_ss58 = extra
+        let spender_ss58 = extra_map
             .get("spender")
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
@@ -337,11 +350,10 @@ impl Facilitator for VaraProvider {
                 )
             })?;
 
-        let owner: ActorId = parse_ss58(owner_ss58)?;
         let spender: ActorId = parse_ss58(spender_ss58)?;
 
         debug!(
-            owner = %owner_ss58,
+            owner = %verification.payer,
             spender = %spender_ss58,
             signer = %self.signer_address,
             "Parsed Vara extra fields"
@@ -356,15 +368,14 @@ impl Facilitator for VaraProvider {
             );
             return Err(FacilitatorLocalError::InvalidSigner(format!(
                 "spender {} does not match relayer {}",
-                spender_ss58,
-                self.signer_address
+                spender_ss58, self.signer_address
             )));
         }
 
         // Fast-fail on insufficient allowance/balance.
         debug!("Checking allowance and balance for Vara payment");
         let allowance = self
-            .read_allowance(program, owner, self.signer_address)
+            .read_allowance(program, verification.payer.0.clone(), self.signer_address)
             .await?;
         tracing::debug!(%allowance, "Read allowance");
         if allowance < amount_u256 {
@@ -372,7 +383,9 @@ impl Facilitator for VaraProvider {
                 "insufficient allowance".to_string(),
             ));
         }
-        let balance = self.read_balance(program, owner).await?;
+        let balance = self
+            .read_balance(program, verification.payer.0.clone())
+            .await?;
         if balance < amount_u256 {
             return Err(FacilitatorLocalError::ContractCall(
                 "insufficient balance".to_string(),
@@ -383,13 +396,16 @@ impl Facilitator for VaraProvider {
         // Run non-Send Sails `.send(...)` inside a blocking section bound to the current runtime.
         info!(
             "Executing Vara transfer: from {} to {} amount {}",
-            owner_ss58, requirements.pay_to, amount_u256
+            verification.payer, requirements.pay_to, amount_u256
         );
         let remoting = GClientRemoting::new(self.rpc_client.clone().into());
         let mut client = extended_vft_client::Vft::new(remoting);
         let send_res = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(client.transfer_from(owner, to, amount_u256).send(program))
+            tokio::runtime::Handle::current().block_on(
+                client
+                    .transfer_from(verification.payer.0.clone(), to, amount_u256)
+                    .send(program),
+            )
         });
 
         send_res.map_err(|e| {
@@ -400,7 +416,8 @@ impl Facilitator for VaraProvider {
 
         // Build a correlation id (pre-settlement hash is still useful for the caller).
         // If you later expose the real extrinsic hash, replace this with it.
-        let corr = sp_core::blake2_256(&(program, owner, to, amount_u256).encode());
+        let corr =
+            sp_core::blake2_256(&(program, verification.payer.0.clone(), to, amount_u256).encode());
         let payer: MixedAddress = verification.payer.clone().into();
 
         info!("Vara payment settlement completed successfully");

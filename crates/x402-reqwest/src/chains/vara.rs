@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use extended_vft_client::traits::Vft;
 use gclient::GearApi;
-use gsdk::PairSigner;
 use gsdk::metadata::runtime_types::gprimitives;
 use sails_rs::calls::Call;
 use sails_rs::calls::Remoting;
@@ -16,8 +15,8 @@ use x402_rs::types::{
     TokenAmount, VaraPayloadMetadata, X402Version,
 };
 
-use crate::X402PaymentsError;
 use crate::chains::{IntoSenderWallet, SenderWallet};
+use crate::X402PaymentsError;
 
 /// Vara provider for contract interactions using sails-rs
 #[derive(Clone)]
@@ -67,7 +66,7 @@ impl VaraProvider {
         );
 
         let send_res = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(client.approve(spender, amount * 2).send(asset))
+            tokio::runtime::Handle::current().block_on(client.approve(spender, amount).send(asset))
         });
 
         send_res

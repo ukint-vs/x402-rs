@@ -9,13 +9,13 @@
 
 use alloy::primitives::{Bytes, U256};
 use alloy::{hex, sol};
-use base64::Engine;
 use base64::engine::general_purpose::STANDARD as b64;
+use base64::Engine;
 use gprimitives::ActorId;
 use once_cell::sync::Lazy;
 use regex::Regex;
-use rust_decimal::Decimal;
 use rust_decimal::prelude::{FromPrimitive, Zero};
+use rust_decimal::Decimal;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use solana_sdk::bs58;
@@ -326,7 +326,7 @@ pub struct VaraPayloadMetadata {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExactVaraPayload {
-    // we’ll read owner/spender from requirements.extra and the runtime state
+    /// Non-binding execution hints for the relayer.
     pub metadata: VaraPayloadMetadata, // gas_limit/value hints for relayer
 }
 
