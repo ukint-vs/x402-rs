@@ -1,10 +1,10 @@
 use alloy::signers::local::PrivateKeySigner;
 use dotenvy::dotenv;
 use gclient::WSAddress;
-use tracing_subscriber;
 use reqwest::Client;
 use solana_sdk::signature::Keypair;
 use std::env;
+use tracing_subscriber;
 use x402_reqwest::chains::evm::EvmSenderWallet;
 use x402_reqwest::chains::solana::SolanaSenderWallet;
 use x402_reqwest::chains::vara::VaraSenderWallet;
@@ -69,7 +69,6 @@ async fn buy_vara() -> Result<(), Box<dyn std::error::Error>> {
     // Vanilla reqwest
     let http_client = Client::new()
         .with_payments(sender)
-        .vara_owner(rpc_client.account_id().to_string())
         .prefer(USDCDeployment::by_network(Network::Solana))
         .max(USDCDeployment::by_network(Network::Solana).amount(0.1)?)
         .build();

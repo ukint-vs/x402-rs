@@ -72,13 +72,13 @@ use url::Url;
 use x402_rs::facilitator::Facilitator;
 use x402_rs::network::Network;
 use x402_rs::types::{
-    Base64Bytes, FacilitatorErrorReason, MixedAddress, PaymentPayload, PaymentRequiredResponse,
-    PaymentRequirements, Scheme, SettleRequest, SettleResponse, TokenAmount, VerifyRequest,
-    VerifyResponse, X402Version,
+    Base64Bytes, ExactPaymentPayload, FacilitatorErrorReason, MixedAddress, PaymentPayload,
+    PaymentRequiredResponse, PaymentRequirements, Scheme, SettleRequest, SettleResponse,
+    TokenAmount, VerifyRequest, VerifyResponse, X402Version,
 };
 
 #[cfg(feature = "telemetry")]
-use tracing::{Instrument, Level, instrument};
+use tracing::{instrument, Instrument, Level};
 
 use crate::facilitator_client::{FacilitatorClient, FacilitatorClientError};
 use crate::price::PriceTag;
@@ -544,14 +544,14 @@ where
                 self.payment_requirements.as_ref().clone(),
             ))?;
 
+        let mut extra_map = selected
+            .extra
+            .take()
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default();
+
         if let Some(owner_val) = headers.get(VARA_OWNER_HEADER).and_then(|h| h.to_str().ok()) {
-            let mut map = selected
-                .extra
-                .take()
-                .and_then(|v| v.as_object().cloned())
-                .unwrap_or_default();
-            map.insert("owner".to_string(), json!(owner_val));
-            selected.extra = Some(serde_json::Value::Object(map));
+            extra_map.insert("owner".to_string(), json!(owner_val));
         }
 
         if let Ok(supported) = self.facilitator.supported().await {
@@ -562,20 +562,18 @@ where
                 .find(|k| k.network == selected.network)
             {
                 if let Some(ex) = kind.extra.as_ref() {
-                    let mut map = selected
-                        .extra
-                        .take()
-                        .and_then(|v| v.as_object().cloned())
-                        .unwrap_or_default();
                     tracing::debug!(
                         network = %selected.network,
                         spender = %ex.fee_payer,
                         "Injecting relayer spender into payment requirements"
                     );
-                    map.insert("spender".to_string(), json!(ex.fee_payer.clone()));
-                    selected.extra = Some(serde_json::Value::Object(map));
+                    extra_map.insert("spender".to_string(), json!(ex.fee_payer.clone()));
                 }
             }
+        }
+
+        if !extra_map.is_empty() {
+            selected.extra = Some(serde_json::Value::Object(extra_map));
         }
 
         tracing::debug!(network = %selected.network, extra = ?selected.extra, "Payment requirements after merge");
